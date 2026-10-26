@@ -1,3 +1,4 @@
+﻿export const instant = false;
 import { getProjects } from "@/lib/projects";
 import ProjectCard from "@/components/ProjectCard";
 
