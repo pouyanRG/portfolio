@@ -57,7 +57,16 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
     <div ref={hostRef} className={s.root}>
       {!failed && <canvas ref={canvasRef} className={s.canvas} aria-hidden="true" />}
       <div className={s.vignette} /><div className={s.grain} />
-      <Link href="/" className={s.brand}>Pouyan</Link>
+
+      <header className={s.header}>
+        <Link href="/" className={s.brand}>Pouyan</Link>
+        <nav className={s.nav} aria-label="Main">
+          <Link href="/#about">About</Link>
+          <Link href="/work" aria-current="page">Work</Link>
+          <Link href="/#contact">Contact</Link>
+        </nav>
+        <Link href="/#contact" className={s.talk}>Let&rsquo;s talk <span aria-hidden>↳</span></Link>
+      </header>
 
       {/* real links stay in the DOM for screen readers, crawlers and no-WebGL fallback */}
       <ul className={failed ? s.fallback : s.sr}>
@@ -67,7 +76,7 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
       {!failed && cur && (
         <div className={`${s.ui} ${ready ? s.on : ""}`}>
           <div key={cur.slug} className={s.caption}>
-            <h1 className={s.title}>{cur.title}<sup>™</sup></h1>
+            <h1 className={s.title}><span className={s.arrow} aria-hidden>↳</span>{cur.title}<sup>™</sup></h1>
             <p className={s.meta}>{cur.description.split(/[.\n]/)[0]}</p>
           </div>
           <Link href={`/projects/${cur.slug}`} className={s.open}>{cur.category} · {cur.status} <b aria-hidden>→</b></Link>
@@ -78,7 +87,12 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
                 {categories.map((c) => (<button key={c} role="menuitemradio" aria-checked={c === filter} className={c === filter ? s.chipOn : s.chip} onClick={() => pick(c)}>{c}</button>))}
               </div>
             )}
-            <button className={s.filter} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>Filter</button>
+            <button className={s.filter} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>
+              Filter
+              <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+                <path d="M1 1.5h18M4 7h12M7.5 12.5h5" />
+              </svg>
+            </button>
             <div className={s.counter}>
               <span>{pad(active + 1)}</span>
               <div className={s.ticks}>
@@ -87,6 +101,8 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
               <span>{pad(list.length)}</span>
             </div>
           </div>
+
+          <div className={s.orb} aria-hidden />
         </div>
       )}
     </div>

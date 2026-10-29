@@ -11,11 +11,12 @@ type Opts = {
  * Ring geometry (viewed from OUTSIDE the cylinder, like the reference):
  * the ring centre sits BEHIND the cards at z = -D - R, the active card is D units in front of the target,
  * side cards curve away from the camera.
+ * CH = 2.9 gives the reference's ~3:4 card (frame included).
  */
-const CW = 2.1, CH = 3.05, R = 8.5, D = 12, STEP = 0.32, FLOOR = -1.75, SPAN = 5.2, FR = 0.17;
+const CW = 2.1, CH = 2.9, R = 8.5, D = 12, STEP = 0.32, FLOOR = -1.75, SPAN = 5.2, FR = 0.17;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const hash = (s: string) => { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
-const HUES = [268, 262, 275, 258, 280, 266]; // mostly violet like the reference, tiny variation per project
+const HUES = [268, 262, 275, 258, 280, 266]; // fallback violet when an image has no usable colour
 const hashAccent = (slug: string) => new THREE.Color().setHSL(HUES[hash(slug) % HUES.length] / 360, 0.8, 0.54);
 const MAGENTA = new THREE.Color().setHSL(305 / 360, 0.85, 0.55); // hover colour
 const rgba = (c: THREE.Color, a: number) => `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${a})`;
@@ -56,6 +57,37 @@ function fallbackTex(p: Project, accent: THREE.Color) {
     x.fillText(line, 44, y);
   }, true);
 }
+
+/*
+ * The small monospace spec sheet printed on every card in the reference
+ * (PROJECT /NN, NAME, TYPE, STACK ...). Only the alpha channel is used by the shader,
+ * and it is sampled with the card-local coordinate vP, so it always sits in the same spot.
+ * Only real fields from the Project row are printed.
+ */
+function infoTex(p: Project, pi: number) {
+  return canvasTex(512, 707, (x) => {
+    x.fillStyle = "#fff"; x.textBaseline = "alphabetic";
+    x.font = '500 15px "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace';
+    const L = 84, Rr = 512 - 84, W = Rr - L;
+    const fit = (s: string, max: number) => { let t = s.toUpperCase(); while (t.length > 1 && x.measureText(t).width > max) t = t.slice(0, -2) + "…"; return t; };
+    let y = 285;
+    x.textAlign = "left"; x.fillText("PROJECT", L, y);
+    x.textAlign = "right"; x.fillText("/" + String(pi + 1).padStart(2, "0"), Rr, y);
+    y += 40;
+    const rows: [string, string][] = [["NAME:", p.title], ["TYPE:", p.category]];
+    if (p.status) rows.push(["STATUS:", p.status]);
+    for (const [k, v] of rows) {
+      x.textAlign = "left"; x.fillText(k, L, y);
+      x.textAlign = "right"; x.fillText(fit(v, W - x.measureText(k).width - 14), Rr, y);
+      y += 28;
+    }
+    if (p.tech.length) {
+      y += 6; x.textAlign = "left"; x.fillText("STACK:", L, y);
+      x.textAlign = "right";
+      for (const t of p.tech.slice(0, 4)) { x.fillText(fit(t, W - 90), Rr, y); y += 22; }
+    }
+  });
+}
 function sampleAccent(img: HTMLImageElement) {
   try {
     const c = document.createElement("canvas"); c.width = c.height = 24;
@@ -82,8 +114,9 @@ void main(){
   p.x += s * 0.12; p.z += yy * uHover * 0.35 + s * 0.05;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }`;
-// Image: refraction near the edge, dark glassy inner edge, lenticular grooves on side cards, chromatic aberration on hover.
-const imgFrag = `uniform sampler2D map; uniform float uDim, uHover, uSide; varying vec2 vUv; varying vec2 vP;
+// Image: refraction near the edge, dark glassy inner edge, lenticular grooves on every card (stronger on the sides),
+// chromatic aberration on hover, and the monospace spec sheet (uInfo) printed on top.
+const imgFrag = `uniform sampler2D map; uniform sampler2D info; uniform float uDim, uHover, uSide, uInfo; varying vec2 vUv; varying vec2 vP;
 void main(){
   float ed = min(min(vP.x, 1.0 - vP.x) * ${CWf}, min(vP.y, 1.0 - vP.y) * ${CHf});
   float k = 1.0 - smoothstep(0.0, 0.3, ed);
@@ -92,7 +125,9 @@ void main(){
   vec3 c = vec3(texture2D(map, uv + vec2(ab, 0.0)).r, texture2D(map, uv).g, texture2D(map, uv - vec2(ab, 0.0)).b);
   c *= mix(0.28, 1.0, smoothstep(0.0, 0.42, ed));
   float groove = 0.5 + 0.5 * sin(vP.x * 150.0);
-  c *= 1.0 - uSide * (0.18 + 0.32 * groove);
+  c *= 1.0 - uSide * 0.18 - (0.07 + 0.3 * uSide) * groove;
+  float t = texture2D(info, vP).a * uInfo;
+  c = mix(c * (1.0 - 0.35 * t), vec3(1.0), t * 0.92);
   gl_FragColor = vec4(c * uDim, 1.0);
   #include <colorspace_fragment>
 }`;
@@ -181,11 +216,11 @@ export function createWorkScene(o: Opts): SceneApi {
   // Infinite-looking ring: tile the projects so there are always >= 21 cards (copies share textures/geometry),
   // and re-centre silently when the user settles near an end.
   const L = n >= 21 ? n : n * Math.ceil(21 / n), start = L > n ? n * Math.floor(L / n / 2) : 0;
-  const geoP: THREE.BufferGeometry[] = [], texP: THREE.Texture[] = [], accP: THREE.Color[] = [];
+  const geoP: THREE.BufferGeometry[] = [], texP: THREE.Texture[] = [], accP: THREE.Color[] = [], infoP: THREE.Texture[] = [];
 
   projects.forEach((p, pi) => {
     const accent = hashAccent(p.slug), geo = roundedGeo(CW, CH, 0.12); setCover(geo, 512, 768);
-    geoP.push(geo); texP.push(fallbackTex(p, accent)); accP.push(accent);
+    geoP.push(geo); texP.push(fallbackTex(p, accent)); accP.push(accent); infoP.push(infoTex(p, pi));
     if (!p.image_url) return;
     const im = new Image(); im.crossOrigin = "anonymous";
     im.onload = () => {
@@ -204,7 +239,10 @@ export function createWorkScene(o: Opts): SceneApi {
     const pi = i % n, accent = accP[pi], geo = geoP[pi], tex = texP[pi];
     const hov = { value: 0 }; // shared by every layer of this card
 
-    const mat = new THREE.ShaderMaterial({ uniforms: { map: { value: tex }, uDim: { value: 0.5 }, uHover: hov, uSide: { value: 0 } }, vertexShader: cardVert, fragmentShader: imgFrag });
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { map: { value: tex }, info: { value: infoP[pi] }, uDim: { value: 0.5 }, uHover: hov, uSide: { value: 0 }, uInfo: { value: 0 } },
+      vertexShader: cardVert, fragmentShader: imgFrag,
+    });
     const img = new THREE.Mesh(geo, mat); img.userData.i = i; hit.push(img);
     const fmat = new THREE.ShaderMaterial({ uniforms: { uColor: { value: accent.clone() }, uHover: hov, uAlpha: { value: 1 } }, vertexShader: cardVert, fragmentShader: frameFrag });
     const frame = new THREE.Mesh(frameGeo, fmat); frame.position.z = -0.012;
@@ -347,6 +385,8 @@ export function createWorkScene(o: Opts): SceneApi {
       const edge = clamp(1 - (Math.abs(rel) - 3.6) / 1.6, 0, 1) * intro;
       const dim = (0.36 + 0.64 * act) * edge;
       cd.mat.uniforms.uDim.value = dim; cd.mat.uniforms.uSide.value = (1 - act) * edge;
+      // spec-sheet text: full on the active card, a faint ghost on neighbours, brightens on hover
+      cd.mat.uniforms.uInfo.value = (0.28 + 0.72 * act + 0.3 * cd.hov.value) * edge;
       cd.rmat.uniforms.uDim.value = dim * 0.9;
       const fc = (0.3 + 0.7 * act) * edge;
       (cd.fmat.uniforms.uColor.value as THREE.Color).copy(accentCur).multiplyScalar(fc);
@@ -389,8 +429,9 @@ export function createWorkScene(o: Opts): SceneApi {
       canvas.removeEventListener("pointerenter", onEnter); canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("wheel", onWheel);
       [scene, hudScene].forEach((sc) => sc.traverse((ob) => { const m = ob as THREE.Mesh; m.geometry?.dispose(); const mt = m.material as THREE.Material | THREE.Material[] | undefined; (Array.isArray(mt) ? mt : mt ? [mt] : []).forEach((x) => x.dispose()); }));
-      texP.forEach((t) => t.dispose()); [glowTex, shaftTex, dotTex].forEach((t) => t.dispose());
-      renderer.dispose(); renderer.forceContextLoss();
+      texP.forEach((t) => t.dispose()); infoP.forEach((t) => t.dispose()); [glowTex, shaftTex, dotTex].forEach((t) => t.dispose());
+      // no forceContextLoss(): React StrictMode remounts on the same <canvas> in dev and would get a dead context
+      renderer.dispose();
     },
   };
 }
