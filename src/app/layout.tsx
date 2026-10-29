@@ -2,6 +2,11 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
+import { IBM_Plex_Mono, Instrument_Serif } from "next/font/google";
+
+const plexMono = IBM_Plex_Mono({ variable: "--font-plex-mono", subsets: ["latin"], weight: ["400", "500"] });
+const serif = Instrument_Serif({ variable: "--font-serif", subsets: ["latin"], weight: "400" });
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
