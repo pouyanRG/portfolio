@@ -34,7 +34,7 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
         onOpen: (i) => router.push(`/projects/${list[i].slug}`),
         onReady: () => setReady(true),
       });
-    } catch { queueMicrotask(() => setFailed(true)); return; }
+    } catch (err) { console.error("[work] WebGL scene failed:", err); queueMicrotask(() => setFailed(true)); return; }
     apiRef.current = api;
     return () => { api.dispose(); apiRef.current = null; };
   }, [list, router]);
