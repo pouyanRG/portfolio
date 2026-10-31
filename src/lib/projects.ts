@@ -4,13 +4,13 @@ import { supabase } from "./supabase";
 export type Project = {
   slug: string; title: string; category: string; status: string;
   description: string; tech: string[]; image_url: string | null;
+  emotion: string; // optional column: "Calm", "Bold", ... ("" when the row has none)
 };
 
 const redis = Redis.fromEnv();
-const KEY = "projects:v2"; // نسخه جدید = کش خالی قبلی (v1) دور ریخته می‌شود
-const TTL = 3600; // یک ساعت
+const KEY = "projects:v3"; // bumped: the shape changed (emotion), so the old cache is ignored
+const TTL = 3600;
 
-// ردیف‌های ناقص دیتابیس نباید صفحه را بشکنند
 const normalize = (r: Partial<Project>): Project => ({
   slug: String(r.slug ?? ""),
   title: r.title ?? "Untitled",
@@ -19,10 +19,10 @@ const normalize = (r: Partial<Project>): Project => ({
   description: r.description ?? "",
   tech: Array.isArray(r.tech) ? r.tech : [],
   image_url: r.image_url ?? null,
+  emotion: r.emotion ?? "",
 });
 
 export async function getProjects(): Promise<Project[]> {
-  // اگر Redis قطع بود، سایت باید با Supabase کار کند
   try {
     const cached = await redis.get<Project[]>(KEY);
     if (cached && cached.length > 0) return cached;
@@ -32,7 +32,7 @@ export async function getProjects(): Promise<Project[]> {
 
   const { data, error } = await supabase
     .from("projects")
-    .select("slug,title,category,status,description,tech,image_url")
+    .select("slug,title,category,status,description,tech,image_url,emotion")
     .eq("published", true)
     .order("sort_order", { ascending: true });
 
@@ -44,7 +44,7 @@ export async function getProjects(): Promise<Project[]> {
   const projects = (data ?? []).filter((r) => r.slug).map(normalize);
   if (projects.length === 0) {
     console.warn("[projects] 0 rows: check published=true rows and RLS SELECT policy for anon");
-    return projects; // نتیجه خالی هرگز کش نمی‌شود
+    return projects;
   }
 
   try {
@@ -55,5 +55,4 @@ export async function getProjects(): Promise<Project[]> {
   return projects;
 }
 
-// بعد از ویرایش پروژه در پنل ادمین صدا بزن تا کش فوراً تازه شود
 export const invalidateProjects = () => redis.del(KEY);
