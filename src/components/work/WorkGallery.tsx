@@ -55,9 +55,10 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
       api = createWorkScene({
         canvas, host, projects: list, quality: qualityRef.current,
         reduceMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-        onActive: (i, accent) => {
+        // the scene accent (blue rims) is independent from the UI accent (violet pills), as on the reference
+        onActive: (i) => {
           if (i !== last) { if (last >= 0) audioRef.current?.tick(); last = i; }
-          setActive(i); host.style.setProperty("--accent", accent);
+          setActive(i);
         },
         onOpen: (i) => router.push(`/projects/${list[i].slug}`),
         onReady: () => setReady(true),
@@ -107,9 +108,11 @@ export default function WorkGallery({ projects }: { projects: Project[] }) {
         </nav>
         <div className={s.tools}>
           <SettingsMenu sound={sound} onSound={toggleSound} dark={dark} onDark={setDark} quality={quality} onQuality={setQuality} />
-          <Equalizer on={sound} levels={levels} />
         </div>
-        <Link href="/#contact" className={s.talk}>Let&rsquo;s talk <span aria-hidden>↳</span></Link>
+        <div className={s.end}>
+          <Equalizer on={sound} levels={levels} />
+          <Link href="/#contact" className={s.talk}>Let&rsquo;s talk <span aria-hidden>↳</span></Link>
+        </div>
       </header>
 
       {/* real links stay in the DOM for screen readers, crawlers and no-WebGL fallback */}

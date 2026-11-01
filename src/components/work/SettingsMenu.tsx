@@ -11,7 +11,7 @@ export function Equalizer({ on, levels }: { on: boolean; levels: (n: number) => 
   const bars = useRef<(HTMLSpanElement | null)[]>([]);
   useEffect(() => {
     const apply = (fn: (i: number) => number) => bars.current.forEach((el, i) => { if (el) el.style.transform = `scaleY(${fn(i)})`; });
-    if (!on) { apply((i) => 0.2 + 0.07 * ((i * 5) % 4)); return; }
+    if (!on) { apply((i) => 0.55 + 0.1 * ((i * 5) % 4)); return; }
     let raf = 0;
     const loop = (t: number) => {
       const lv = levels(N_BARS);

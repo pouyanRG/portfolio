@@ -19,13 +19,17 @@ type Opts = {
  * Post chain: scene -> UnrealBloom (neon) -> liquid lens (refracts the frame under the cursor) -> sRGB output.
  *
  * Cards: hover/click NEVER changes the card's shape, size or angle. Only the image gets an effect (see imgFx in imgFrag).
+ *
+ * Ring geometry (R, STEP) was fitted to the reference screenshot: neighbour spacing ratios 1 : 1.9 : 2.6 : 3.1 : 3.4
+ * (measured card centres) are reproduced by R = 16, STEP = 0.16 with the camera at distance D + 3.6.
  */
-const CW = 2.1, CH = 2.85, R = 8.5, D = 12, STEP = 0.29, FLOOR = -1.75, SPAN = 5.2, FR = 0.08;
-const CARD_RADIUS = 0.16, FRAME_RADIUS = 0.24;
-const BLOOM = [0, 0.75, 1.0] as const;
+const CW = 2.1, CH = 2.85, R = 16, D = 12, STEP = 0.16, FLOOR = -1.55, SPAN = 7.2, FR = 0.03;
+const CARD_RADIUS = 0.12, FRAME_RADIUS = 0.15;
+const BLOOM = [0, 0.25, 0.4] as const;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const hash = (s: string) => { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
-const HUES = [268, 262, 275, 258, 280, 266];
+// reference rims are one azure blue on every card (measured ~ rgb(30,150,215)), so the hue range is narrow
+const HUES = [203, 199, 207, 196, 209, 201];
 const hashAccent = (slug: string) => new THREE.Color().setHSL(HUES[hash(slug) % HUES.length] / 360, 0.85, 0.5);
 const MAGENTA = new THREE.Color().setHSL(305 / 360, 0.9, 0.55);
 const rgba = (c: THREE.Color, a: number) => `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${a})`;
@@ -92,20 +96,6 @@ function drawInfo(x: CanvasRenderingContext2D, p: Project, pi: number, fam: stri
     for (const t of p.tech.slice(0, 4)) { x.fillText(fit(t, W - 90), Rr, y); y += 22; }
   }
 }
-function sampleAccent(img: HTMLImageElement) {
-  try {
-    const c = document.createElement("canvas"); c.width = c.height = 24;
-    const x = c.getContext("2d", { willReadFrequently: true })!; x.drawImage(img, 0, 0, 24, 24);
-    const d = x.getImageData(0, 0, 24, 24).data; let r = 0, g = 0, b = 0, w = 0, sat = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]), s = (mx - mn) / 255;
-      const wt = s * s + 0.01; r += d[i] * wt; g += d[i + 1] * wt; b += d[i + 2] * wt; w += wt; sat += s;
-    }
-    if (sat / 576 < 0.14) return null;
-    const col = new THREE.Color().setRGB(r / w / 255, g / w / 255, b / w / 255, THREE.SRGBColorSpace);
-    const hsl = { h: 0, s: 0, l: 0 }; col.getHSL(hsl); return col.setHSL(hsl.h, Math.max(hsl.s, 0.7), 0.55);
-  } catch { return null; }
-}
 
 // ---------- shaders ----------
 const CWf = CW.toFixed(3), CHf = CH.toFixed(3);
@@ -166,15 +156,16 @@ void main(){
   float b = 0.012 + vH * 0.06; vec3 c = texture2D(map, vUv).rgb * 0.36;
   c += texture2D(map, vUv + vec2(0.0, b)).rgb * 0.2 + texture2D(map, vUv - vec2(0.0, b)).rgb * 0.2;
   c += texture2D(map, vUv + vec2(b, 0.0)).rgb * 0.12 + texture2D(map, vUv - vec2(b, 0.0)).rgb * 0.12;
-  gl_FragColor = vec4(c * uDim, pow(clamp(1.0 - vH, 0.0, 1.0), 2.8) * 0.34);
+  gl_FragColor = vec4(c * uDim, pow(clamp(1.0 - vH, 0.0, 1.0), 2.8) * 0.07);
   #include <colorspace_fragment>
 }`;
 const floorVert = `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
+// thin neon track: bright core + a faint halo (the reference shows a ~1 card-width-per-30 thin line, not a wide glow)
 const floorFrag = `varying vec3 vW; uniform vec3 uAccent; uniform float uR; uniform vec2 uC;
 void main(){
   vec2 d = vW.xz - uC; float e = abs(length(d) - uR); float th = atan(d.x, d.y);
   float m = 1.0 - smoothstep(1.1, 1.7, abs(th));
-  float a = (exp(-e*e*220.0) * 1.0 + exp(-e*e*1.6) * 0.42) * m;
+  float a = (exp(-e*e*260.0) * 1.0 + exp(-e*e*3.0) * 0.05) * m;
   gl_FragColor = vec4(uAccent, a);
   #include <colorspace_fragment>
 }`;
@@ -239,7 +230,7 @@ type Card = {
 export function createWorkScene(o: Opts): SceneApi {
   const { canvas, host, projects, reduceMotion } = o, n = projects.length;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "high-performance" });
-  renderer.setClearColor(0x030206, 1); // canvas MSAA is useless with a composer; the offscreen target below is multisampled instead
+  renderer.setClearColor(0x000000, 1); // canvas MSAA is useless with a composer; the offscreen target below is multisampled instead
   const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
   const scene = new THREE.Scene();
@@ -262,8 +253,9 @@ export function createWorkScene(o: Opts): SceneApi {
     return (v ? v + "," : "") + "ui-monospace, Menlo, Consolas, monospace";
   };
 
-  // Infinite-looking ring: tile the projects so there are always >= 21 cards (copies share textures/geometry).
-  const L = n >= 21 ? n : n * Math.ceil(21 / n), start = L > n ? n * Math.floor(L / n / 2) : 0;
+  // Infinite-looking ring: tile the projects so there are always >= 25 cards (copies share textures/geometry).
+  const MIN = 25;
+  const L = n >= MIN ? n : n * Math.ceil(MIN / n), start = L > n ? n * Math.floor(L / n / 2) : 0;
   const geoP: THREE.BufferGeometry[] = [], texP: THREE.Texture[] = [], accP: THREE.Color[] = [], infoP: THREE.CanvasTexture[] = [];
 
   projects.forEach((p, pi) => {
@@ -279,8 +271,6 @@ export function createWorkScene(o: Opts): SceneApi {
       setCover(geoP[pi], im.naturalWidth, im.naturalHeight);
       texP[pi].dispose(); texP[pi] = t;
       for (const cd of cards) if (cd.i % n === pi) { cd.mat.uniforms.map.value = t; cd.rmat.uniforms.map.value = t; }
-      const a = sampleAccent(im);
-      if (a) { accP[pi].copy(a); if (shown >= 0 && shown % n === pi) o.onActive(pi, "#" + a.getHexString()); }
     };
     im.onerror = () => console.error("[work] image failed to load (private bucket / CORS / bad URL?):", p.image_url);
     im.src = p.image_url;
@@ -332,7 +322,7 @@ export function createWorkScene(o: Opts): SceneApi {
   }
 
   // --- floor track, light beams, smoke, dust
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.ShaderMaterial({
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), new THREE.ShaderMaterial({
     uniforms: { uAccent: { value: new THREE.Color() }, uR: { value: R + 0.1 }, uC: { value: new THREE.Vector2(0, -D - R) } },
     vertexShader: floorVert, fragmentShader: floorFrag, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
@@ -345,11 +335,12 @@ export function createWorkScene(o: Opts): SceneApi {
     x.fillStyle = v; x.fillRect(0, 0, 64, 256);
   });
   const beamMat = (op: number) => new THREE.MeshBasicMaterial({ map: shaftTex, color: accentCur, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false });
-  const shaftMat = beamMat(0.2), beamMats = [beamMat(0.12), beamMat(0.12)];
-  const shaft = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 14), shaftMat); shaft.position.set(0, 3.6, -D - 4); scene.add(shaft);
-  const beamGeo = new THREE.PlaneGeometry(0.5, 17);
+  // reference: one hairline vertical shaft above the centre card + two hairline diagonals that converge downwards ("\ /")
+  const shaftMat = beamMat(0.22), beamMats = [beamMat(0.16), beamMat(0.16)];
+  const shaft = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 14), shaftMat); shaft.position.set(0, 3.6, -D - 4); scene.add(shaft);
+  const beamGeo = new THREE.PlaneGeometry(0.09, 5.5);
   ([1, -1] as const).forEach((sd, k) => {
-    const b = new THREE.Mesh(beamGeo, beamMats[k]); b.rotation.z = sd * 1.1; b.position.set(sd * 7.4, 3.4, -D - 4); scene.add(b);
+    const b = new THREE.Mesh(beamGeo, beamMats[k]); b.rotation.z = -sd * 1.1; b.position.set(sd * 4.1, 3.5, -D - 4); scene.add(b);
   });
 
   const smokeMat = (mode: number) => new THREE.ShaderMaterial({
@@ -371,7 +362,7 @@ export function createWorkScene(o: Opts): SceneApi {
   const msaa = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
   const composer = new EffectComposer(renderer, msaa);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.75, 0.22);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.4, 0.3);
   composer.addPass(bloom);
   const lens = new ShaderPass(lensShader);
   composer.addPass(lens);
@@ -380,7 +371,7 @@ export function createWorkScene(o: Opts): SceneApi {
   const resize = () => {
     const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h, false); composer.setSize(w, h);
     camera.aspect = w / h; const dist = D + 3.6;
-    const visH = camera.aspect < 1 ? 10 : 9.3;
+    const visH = camera.aspect < 1 ? 10 : 8.3;
     camera.fov = 2 * Math.atan(visH / 2 / dist) * 180 / Math.PI; camera.updateProjectionMatrix();
     lens.uniforms.uAspect.value = camera.aspect;
   };
@@ -401,7 +392,7 @@ export function createWorkScene(o: Opts): SceneApi {
   const setTarget = (v: number) => { target = clamp(v, -0.4, L - 0.6); };
   const snapTarget = () => { target = clamp(Math.round(target), 0, L - 1); };
   let down = false, moved = 0, lastX = 0, dragVel = 0;
-  const pxPerCard = () => Math.max(120, host.clientWidth / 5.2);
+  const pxPerCard = () => Math.max(120, host.clientWidth / 6.6);
 
   const onDown = (e: PointerEvent) => { down = true; moved = 0; lastX = e.clientX; dragVel = 0; canvas.setPointerCapture(e.pointerId); clearTimeout(snap); };
   const onMove = (e: PointerEvent) => {
@@ -448,10 +439,10 @@ export function createWorkScene(o: Opts): SceneApi {
     const k = 52, c = 2 * Math.sqrt(k) * 0.95; vel += ((target - cur) * k - vel * c) * dt; cur += vel * dt;
     if (L > n && !down && Math.abs(vel) < 0.02 && Math.abs(target - cur) < 0.05) {
       const r0 = Math.round(cur);
-      if (r0 < 7 || r0 > L - 8) { const sh = Math.round((start - r0) / n) * n; cur += sh; target += sh; }
+      if (r0 < 8 || r0 > L - 9) { const sh = Math.round((start - r0) / n) * n; cur += sh; target += sh; }
     }
     const idx = clamp(Math.round(cur), 0, L - 1);
-    if (idx !== shown) { if (shown >= 0) kick = 0.45; shown = idx; o.onActive(idx % n, "#" + cards[idx].accent.getHexString()); }
+    if (idx !== shown) { if (shown >= 0) kick = 0.2; shown = idx; o.onActive(idx % n, "#" + cards[idx].accent.getHexString()); }
     kick *= Math.exp(-dt * 3.2);
 
     let hv = -1; const hp = new THREE.Vector3();
@@ -476,32 +467,32 @@ export function createWorkScene(o: Opts): SceneApi {
       cd.mat.uniforms.uClick.value = Math.max(0, (cd.mat.uniforms.uClick.value as number) - dt * 1.1);
       const rel = cd.i - cur, vis = Math.abs(rel) < SPAN;
       cd.pivot.visible = cd.rpivot.visible = vis; if (!vis) continue;
-      // act: tight curve for the small pop of the centre card. lit: wide curve for light, so neighbours stay fairly bright.
-      const th = rel * STEP, act = Math.exp(-rel * rel * 3.4), lit = Math.exp(-rel * rel * 0.9), s = 1 + 0.06 * act;
+      // act: tight curve for the small pop of the centre card. lit: wide curve for light, so neighbours stay bright (reference: +-1 ~90%, +-3 ~50%).
+      const th = rel * STEP, act = Math.exp(-rel * rel * 3.4), lit = Math.exp(-rel * rel * 0.16), s = 1 + 0.06 * act;
       const x = R * Math.sin(th), z = -D - R * (1 - Math.cos(th)) + act * 0.45, y = act * 0.05;
       for (const g of [cd.pivot, cd.rpivot]) { g.position.set(x, y, z); g.rotation.y = th; g.scale.set(s, s, 1); }
-      const edge = clamp(1 - (Math.abs(rel) - 3.6) / 1.6, 0, 1) * intro;
-      const dim = (0.3 + 0.7 * lit) * edge; // centre 1.0, neighbour ~0.59, further ~0.32
+      const edge = clamp(1 - (Math.abs(rel) - 4.8) / 2.2, 0, 1) * intro;
+      const dim = (0.3 + 0.7 * lit) * edge; // centre 1.0
       cd.mat.uniforms.uDim.value = dim; cd.mat.uniforms.uSide.value = (1 - lit) * edge;
       cd.mat.uniforms.uInfo.value = cd.hov.value * edge; // spec sheet only while hovered
       cd.rmat.uniforms.uDim.value = dim * 0.6;
       // frame goes above 1.0 on the active card, which is what the bloom pass picks up
-      const fc = (0.3 + 0.9 * lit) * edge;
+      const fc = (0.22 + 0.4 * lit) * edge;
       (cd.fmat.uniforms.uColor.value as THREE.Color).copy(accentCur).multiplyScalar(fc);
-      (cd.rfmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.rfmat.uniforms.uAlpha.value = 0.1 * edge;
-      (cd.gmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.gmat.uniforms.uOpacity.value = (0.06 + 0.4 * lit) * edge;
+      (cd.rfmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.rfmat.uniforms.uAlpha.value = 0.012 * edge;
+      (cd.gmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.gmat.uniforms.uOpacity.value = (0.01 + 0.06 * lit) * edge;
     }
-    (floor.material as THREE.ShaderMaterial).uniforms.uAccent.value = col.copy(accentCur).multiplyScalar((0.6 + 0.4 * intro) * 1.25);
+    (floor.material as THREE.ShaderMaterial).uniforms.uAccent.value = col.copy(accentCur).multiplyScalar((0.6 + 0.4 * intro) * 0.8);
     const flick = 1 + 0.12 * Math.sin(t * 1.3) + 0.06 * Math.sin(t * 3.1);
-    shaftMat.color.copy(accentCur); shaftMat.opacity = 0.2 * intro * flick;
-    beamMats.forEach((m, i) => { m.color.copy(accentCur); m.opacity = 0.12 * intro * (1 + 0.1 * Math.sin(t * 0.9 + i * 2)); });
-    smokes.forEach((m) => { const u = (m.material as THREE.ShaderMaterial).uniforms; u.uTime.value = t; u.uOp.value = 0.34 * intro; });
+    shaftMat.color.copy(accentCur); shaftMat.opacity = 0.22 * intro * flick;
+    beamMats.forEach((m, i) => { m.color.copy(accentCur); m.opacity = 0.16 * intro * (1 + 0.1 * Math.sin(t * 0.9 + i * 2)); });
+    smokes.forEach((m) => { const u = (m.material as THREE.ShaderMaterial).uniforms; u.uTime.value = t; u.uOp.value = 0.03 * intro; });
     dust.position.y = Math.sin(t * 0.12) * 0.15; dust.rotation.y = t * 0.006;
 
     spx += (px - spx) * (1 - Math.exp(-dt * 2.2)); spy += (py - spy) * (1 - Math.exp(-dt * 2.2));
     const drift = reduceMotion ? 0 : 1;
     camera.position.set(spx * 0.4 + Math.sin(t * 0.17) * 0.08 * drift, 2.4 - spy * 0.15 + Math.sin(t * 0.23) * 0.04 * drift, 3.6 + (1 - intro) * 2.8);
-    camera.lookAt(spx * 0.12, -0.7, -D);
+    camera.lookAt(spx * 0.12, -0.55, -D);
 
     // liquid lens follows the cursor with lag, stretches with speed; switched off over a card so it doesn't fight the image effect
     const asp = camera.aspect, tx = px * asp * 0.5, ty = -py * 0.5;
