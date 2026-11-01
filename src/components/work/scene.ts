@@ -17,8 +17,11 @@ type Opts = {
  * Ring seen from OUTSIDE the cylinder: ring centre is BEHIND the cards at z = -D - R,
  * the active card sits D units in front of the target, side cards curve away from the camera.
  * Post chain: scene -> UnrealBloom (neon) -> liquid lens (refracts the frame under the cursor) -> sRGB output.
+ *
+ * Cards: hover/click NEVER changes the card's shape, size or angle. Only the image gets an effect (see imgFx in imgFrag).
  */
-const CW = 2.1, CH = 2.9, R = 8.5, D = 12, STEP = 0.32, FLOOR = -1.75, SPAN = 5.2, FR = 0.055;
+const CW = 2.1, CH = 2.85, R = 8.5, D = 12, STEP = 0.29, FLOOR = -1.75, SPAN = 5.2, FR = 0.08;
+const CARD_RADIUS = 0.16, FRAME_RADIUS = 0.24;
 const BLOOM = [0, 0.75, 1.0] as const;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const hash = (s: string) => { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
@@ -106,21 +109,35 @@ function sampleAccent(img: HTMLImageElement) {
 
 // ---------- shaders ----------
 const CWf = CW.toFixed(3), CHf = CH.toFixed(3);
-// Shared vertex stage: S-shaped "cloth" bend driven by uHover (identical on every layer of a card so they stay glued).
-const cardVert = `uniform float uHover; varying vec2 vUv; varying vec2 vP;
+// Shared vertex stage. Flat on purpose: hover must not bend, scale or rotate the card.
+const cardVert = `varying vec2 vUv; varying vec2 vP;
 void main(){
   vUv = uv; vP = position.xy / vec2(${CWf}, ${CHf}) + 0.5;
-  vec3 p = position; float yy = position.y / ${CHf};
-  float s = sin(yy * 6.2831) * uHover;
-  p.x += s * 0.2; p.z += yy * uHover * 0.5 + s * 0.08;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
-const imgFrag = `uniform sampler2D map; uniform sampler2D info; uniform float uDim, uHover, uSide, uInfo; varying vec2 vUv; varying vec2 vP;
+const imgFrag = `uniform sampler2D map; uniform sampler2D info;
+uniform float uDim, uHover, uSide, uInfo, uClick, uTime; uniform vec2 uMouse;
+varying vec2 vUv; varying vec2 vP;
+
+// ===== HOVER / CLICK EFFECT (image only). Swap this function to change the effect. =====
+// uv: image coords, w (out): hover strength around the cursor 0..1.
+// uMouse = cursor position on the card (0..1), uClick = 1 right after a click, fades to 0.
+vec2 imgFx(vec2 uv, out float w){
+  vec2 d = vP - uMouse; d.x *= ${CWf} / ${CHf};
+  float r = length(d); vec2 dir = d / (r + 1e-4);
+  w = uHover * exp(-r * r * 14.0);
+  float ripple = sin(r * 40.0 - uTime * 7.0) * w;
+  float q = (r - (1.0 - uClick) * 1.1) * 9.0;
+  float shock = uClick * exp(-q * q);
+  return uv + dir * (ripple * 0.010 + shock * 0.035);
+}
+
 void main(){
   float ed = min(min(vP.x, 1.0 - vP.x) * ${CWf}, min(vP.y, 1.0 - vP.y) * ${CHf});
   float k = 1.0 - smoothstep(0.0, 0.3, ed);
   vec2 uv = vUv - (vP - 0.5) * k * 0.06;
-  float ab = uHover * 0.03 * (0.4 + k);
+  float w; uv = imgFx(uv, w);
+  float ab = w * 0.012 + uClick * 0.01;
   vec3 c = vec3(texture2D(map, uv + vec2(ab, 0.0)).r, texture2D(map, uv).g, texture2D(map, uv - vec2(ab, 0.0)).b);
   c *= mix(0.3, 1.0, smoothstep(0.0, 0.4, ed));
   float groove = 0.5 + 0.5 * sin(vP.x * 150.0);
@@ -130,9 +147,9 @@ void main(){
   gl_FragColor = vec4(c * uDim, 1.0);
   #include <colorspace_fragment>
 }`;
-const frameFrag = `uniform vec3 uColor; uniform float uHover, uAlpha; varying vec2 vP;
+const frameFrag = `uniform vec3 uColor; uniform float uAlpha; varying vec2 vP;
 void main(){
-  vec3 c = uColor * (0.85 + 0.3 * vP.y); c = mix(c, uColor * 1.5, uHover * 0.4);
+  vec3 c = uColor * (0.85 + 0.3 * vP.y);
   gl_FragColor = vec4(c, uAlpha);
   #include <colorspace_fragment>
 }`;
@@ -142,7 +159,7 @@ void main(){
   gl_FragColor = vec4(uColor, a * uOpacity);
   #include <colorspace_fragment>
 }`;
-// reflection: bends with the card, short and soft so it reads as a glossy floor, not a mirror
+// reflection: short and soft so it reads as a glossy floor, not a mirror
 const reflFrag = `uniform sampler2D map; uniform float uDim; varying vec2 vUv; varying vec2 vP;
 void main(){
   float vH = vP.y;
@@ -234,7 +251,7 @@ export function createWorkScene(o: Opts): SceneApi {
     x.shadowColor = "#fff"; x.shadowBlur = 40; x.fillStyle = "#fff";
     x.beginPath(); x.roundRect(43, 51, 170, 282, 22); x.fill();
   });
-  const frameGeo = roundedGeo(CW + FR * 2, CH + FR * 2, 0.175), glowGeo = new THREE.PlaneGeometry(CW + 1.6, CH + 1.6);
+  const frameGeo = roundedGeo(CW + FR * 2, CH + FR * 2, FRAME_RADIUS), glowGeo = new THREE.PlaneGeometry(CW + 1.6, CH + 1.6);
   const mirror = new THREE.Group(); mirror.scale.y = -1; mirror.position.y = 2 * FLOOR; scene.add(mirror);
   const cards: Card[] = [], hit: THREE.Mesh[] = [];
   const loader = { cancelled: false };
@@ -250,7 +267,7 @@ export function createWorkScene(o: Opts): SceneApi {
   const geoP: THREE.BufferGeometry[] = [], texP: THREE.Texture[] = [], accP: THREE.Color[] = [], infoP: THREE.CanvasTexture[] = [];
 
   projects.forEach((p, pi) => {
-    const accent = hashAccent(p.slug), geo = roundedGeo(CW, CH, 0.12); setCover(geo, 512, 768);
+    const accent = hashAccent(p.slug), geo = roundedGeo(CW, CH, CARD_RADIUS); setCover(geo, 512, 768);
     const fam0 = monoFam();
     geoP.push(geo); texP.push(fallbackTex(p, accent)); accP.push(accent);
     infoP.push(canvasTex(512, 707, (x) => drawInfo(x, p, pi, fam0)));
@@ -284,25 +301,28 @@ export function createWorkScene(o: Opts): SceneApi {
     const hov = { value: 0 };
 
     const mat = new THREE.ShaderMaterial({
-      uniforms: { map: { value: tex }, info: { value: infoP[pi] }, uDim: { value: 0.5 }, uHover: hov, uSide: { value: 0 }, uInfo: { value: 0 } },
+      uniforms: {
+        map: { value: tex }, info: { value: infoP[pi] }, uDim: { value: 0.5 }, uHover: hov, uSide: { value: 0 }, uInfo: { value: 0 },
+        uClick: { value: 0 }, uTime: { value: 0 }, uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+      },
       vertexShader: cardVert, fragmentShader: imgFrag,
     });
     const img = new THREE.Mesh(geo, mat); img.userData.i = i; hit.push(img);
-    const fmat = new THREE.ShaderMaterial({ uniforms: { uColor: { value: accent.clone() }, uHover: hov, uAlpha: { value: 1 } }, vertexShader: cardVert, fragmentShader: frameFrag });
+    const fmat = new THREE.ShaderMaterial({ uniforms: { uColor: { value: accent.clone() }, uAlpha: { value: 1 } }, vertexShader: cardVert, fragmentShader: frameFrag });
     const frame = new THREE.Mesh(frameGeo, fmat); frame.position.z = -0.012;
     const gmat = new THREE.ShaderMaterial({
-      uniforms: { map: { value: glowTex }, uColor: { value: accent.clone() }, uOpacity: { value: 0 }, uHover: hov },
+      uniforms: { map: { value: glowTex }, uColor: { value: accent.clone() }, uOpacity: { value: 0 } },
       vertexShader: cardVert, fragmentShader: glowFrag, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     });
     const glow = new THREE.Mesh(glowGeo, gmat); glow.position.z = -0.06;
     const pivot = new THREE.Group(); pivot.add(glow, frame, img); scene.add(pivot);
 
     const rmat = new THREE.ShaderMaterial({
-      uniforms: { map: { value: tex }, uDim: { value: 0.5 }, uHover: hov }, vertexShader: cardVert, fragmentShader: reflFrag,
+      uniforms: { map: { value: tex }, uDim: { value: 0.5 } }, vertexShader: cardVert, fragmentShader: reflFrag,
       transparent: true, depthWrite: false, side: THREE.DoubleSide,
     });
     const rfmat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: accent.clone() }, uHover: hov, uAlpha: { value: 0.1 } }, vertexShader: cardVert, fragmentShader: frameFrag,
+      uniforms: { uColor: { value: accent.clone() }, uAlpha: { value: 0.1 } }, vertexShader: cardVert, fragmentShader: frameFrag,
       transparent: true, depthWrite: false, side: THREE.DoubleSide,
     });
     const rframe = new THREE.Mesh(frameGeo, rfmat); rframe.position.z = -0.012;
@@ -398,7 +418,15 @@ export function createWorkScene(o: Opts): SceneApi {
     if (moved < 6) {
       const r = canvas.getBoundingClientRect(); v2.set(((e.clientX - r.left) / r.width) * 2 - 1, -(((e.clientY - r.top) / r.height) * 2 - 1));
       ray.setFromCamera(v2, camera); const h = ray.intersectObjects(hit, false).find((x) => cards[x.object.userData.i as number].pivot.visible);
-      if (h) { const i = h.object.userData.i as number; if (i === Math.round(cur) && Math.abs(cur - i) < 0.3) o.onOpen(i % n); else target = i; return; }
+      if (h) {
+        const i = h.object.userData.i as number;
+        // click effect on the image only: aim it at the click point, then let it play out
+        const cd = cards[i], l = cd.img.worldToLocal(h.point.clone());
+        (cd.mat.uniforms.uMouse.value as THREE.Vector2).set(l.x / CW + 0.5, l.y / CH + 0.5);
+        cd.mat.uniforms.uClick.value = 1;
+        if (i === Math.round(cur) && Math.abs(cur - i) < 0.3) o.onOpen(i % n); else target = i;
+        return;
+      }
     }
     target = clamp(Math.round(target - dragVel / pxPerCard() * 3), 0, L - 1);
   };
@@ -426,33 +454,42 @@ export function createWorkScene(o: Opts): SceneApi {
     if (idx !== shown) { if (shown >= 0) kick = 0.45; shown = idx; o.onActive(idx % n, "#" + cards[idx].accent.getHexString()); }
     kick *= Math.exp(-dt * 3.2);
 
-    let hv = -1;
+    let hv = -1; const hp = new THREE.Vector3();
     if (inside && mouse && !down) {
       v2.set(px, -py); ray.setFromCamera(v2, camera);
       const h = ray.intersectObjects(hit, false).find((x) => cards[x.object.userData.i as number].pivot.visible);
-      if (h) hv = h.object.userData.i as number;
+      if (h) { hv = h.object.userData.i as number; hp.copy(h.point); }
     }
     canvas.style.cursor = hv >= 0 && !down ? "pointer" : "";
     accentGoal.copy(hv >= 0 ? MAGENTA : cards[idx].accent);
     accentCur.lerp(accentGoal, 1 - Math.exp(-dt * 2.4));
 
+    // cursor position on the hovered card (0..1), used by the image effect
+    if (hv >= 0) {
+      const l = cards[hv].img.worldToLocal(hp.clone());
+      (cards[hv].mat.uniforms.uMouse.value as THREE.Vector2).set(l.x / CW + 0.5, l.y / CH + 0.5);
+    }
+
     for (const cd of cards) {
       cd.hov.value += ((cd.i === hv ? 1 : 0) - cd.hov.value) * (1 - Math.exp(-dt * 6));
+      cd.mat.uniforms.uTime.value = t;
+      cd.mat.uniforms.uClick.value = Math.max(0, (cd.mat.uniforms.uClick.value as number) - dt * 1.1);
       const rel = cd.i - cur, vis = Math.abs(rel) < SPAN;
       cd.pivot.visible = cd.rpivot.visible = vis; if (!vis) continue;
-      const th = rel * STEP, act = Math.exp(-rel * rel * 3.4), s = 1 + 0.06 * act;
+      // act: tight curve for the small pop of the centre card. lit: wide curve for light, so neighbours stay fairly bright.
+      const th = rel * STEP, act = Math.exp(-rel * rel * 3.4), lit = Math.exp(-rel * rel * 0.9), s = 1 + 0.06 * act;
       const x = R * Math.sin(th), z = -D - R * (1 - Math.cos(th)) + act * 0.45, y = act * 0.05;
       for (const g of [cd.pivot, cd.rpivot]) { g.position.set(x, y, z); g.rotation.y = th; g.scale.set(s, s, 1); }
       const edge = clamp(1 - (Math.abs(rel) - 3.6) / 1.6, 0, 1) * intro;
-      const dim = (0.36 + 0.64 * act) * edge;
-      cd.mat.uniforms.uDim.value = dim; cd.mat.uniforms.uSide.value = (1 - act) * edge;
+      const dim = (0.3 + 0.7 * lit) * edge; // centre 1.0, neighbour ~0.59, further ~0.32
+      cd.mat.uniforms.uDim.value = dim; cd.mat.uniforms.uSide.value = (1 - lit) * edge;
       cd.mat.uniforms.uInfo.value = cd.hov.value * edge; // spec sheet only while hovered
       cd.rmat.uniforms.uDim.value = dim * 0.6;
       // frame goes above 1.0 on the active card, which is what the bloom pass picks up
-      const fc = (0.32 + 1.05 * act) * edge;
+      const fc = (0.3 + 0.9 * lit) * edge;
       (cd.fmat.uniforms.uColor.value as THREE.Color).copy(accentCur).multiplyScalar(fc);
       (cd.rfmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.rfmat.uniforms.uAlpha.value = 0.1 * edge;
-      (cd.gmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.gmat.uniforms.uOpacity.value = (0.08 + 0.5 * act) * edge;
+      (cd.gmat.uniforms.uColor.value as THREE.Color).copy(accentCur); cd.gmat.uniforms.uOpacity.value = (0.06 + 0.4 * lit) * edge;
     }
     (floor.material as THREE.ShaderMaterial).uniforms.uAccent.value = col.copy(accentCur).multiplyScalar((0.6 + 0.4 * intro) * 1.25);
     const flick = 1 + 0.12 * Math.sin(t * 1.3) + 0.06 * Math.sin(t * 3.1);
@@ -466,14 +503,14 @@ export function createWorkScene(o: Opts): SceneApi {
     camera.position.set(spx * 0.4 + Math.sin(t * 0.17) * 0.08 * drift, 2.4 - spy * 0.15 + Math.sin(t * 0.23) * 0.04 * drift, 3.6 + (1 - intro) * 2.8);
     camera.lookAt(spx * 0.12, -0.7, -D);
 
-    // liquid lens follows the cursor with lag, stretches with speed, shrinks over a card
+    // liquid lens follows the cursor with lag, stretches with speed; switched off over a card so it doesn't fight the image effect
     const asp = camera.aspect, tx = px * asp * 0.5, ty = -py * 0.5;
     if (!blobInit && inside && mouse) { bx = tx; by = ty; blobInit = true; }
     const kb = 1 - Math.exp(-dt * 7), nx = bx + (tx - bx) * kb, ny = by + (ty - by) * kb, kv = 1 - Math.exp(-dt * 10);
     bvx += ((nx - bx) / Math.max(dt, 1e-3) - bvx) * kv; bvy += ((ny - by) / Math.max(dt, 1e-3) - bvy) * kv; bx = nx; by = ny;
     const bu = lens.uniforms;
     (bu.uPos.value as THREE.Vector2).set(bx, by); (bu.uVel.value as THREE.Vector2).set(bvx, bvy);
-    bu.uSize.value += ((hv >= 0 ? 0.45 : 1) - bu.uSize.value) * (1 - Math.exp(-dt * 8));
+    bu.uSize.value += ((hv >= 0 ? 0 : 1) - bu.uSize.value) * (1 - Math.exp(-dt * 8));
     bu.uVis.value += ((inside && mouse && !down && !reduceMotion ? 1 : 0) - bu.uVis.value) * (1 - Math.exp(-dt * 6));
     bu.uTime.value = t;
 
